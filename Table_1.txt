@@ -1,0 +1,117 @@
+end(reset)
+com cap_T = 1000  , w = cap_t/500.
+all cap_T
+seed 2011
+
+compute fstats =    || 2.30 , 3.00 | 1.94 , 2.37 | 1.77 , 2.10 | 1.67, 1.94 | 1.60, 1.83||
+compute chistats =  || 7.78 , 9.49 | 13.4 , 15.5 | 18.5 , 21.0 | 23.54, 26.29 | 28.41, 31.41 ||
+*compute chistats2 = || 4.61 , 5.99 | 7.78 , 9.49 | 10.64 , 12.59 ||
+
+* Initialize the system
+set trend = t
+com nstar = 3
+
+dec vector[integer] reglist reglist0  reglist1 reglist2 reglist3 reglist4 reglist5
+dec vector[series] sine(nstar) cosine(nstar) x(2)  break(7)
+
+* Create the trig functions
+
+dec vector[series] sine(nstar) cosine(nstar)
+com reglist0 = || constant | trend ||
+do k = 1,nstar
+  set sine(k) = sin(2*%pi*k*t/cap_T) ; set cosine(k) = cos(2*%pi*k*t/cap_T)
+end do k
+enter(varying) reglist1 ; # reglist0 sine(1) cosine(1)
+enter(varying) reglist2 ; # reglist1 sine(2) cosine(2)
+enter(varying) reglist3 ; # reglist2 sine(3) cosine(3)
+*enter(varying) reglist4 ; # reglist3 sine(4) cosine(4)
+* enter(varying) reglist5 ; # reglist4 sine(5) cosine(5)
+
+dis 'Sample Size =' ### cap_t
+com d11 = 0 , d12 = 0, d21 = 0 , d22 = 0
+dis '    D = ||' d11 d12 '|' d21 d22 '||'
+
+
+com vmatrix = ||1 , .0 | .0 , 1 ||
+dis 'Covariance matrix = ' vmatrix
+
+* Simulate the VAR
+set x1 = 0.+%ran(1)
+set x2 = 0.+%ran(1)
+
+dis 'Set GC(0)   F(0)    F(1)    F(2)    F(3)' ; *     F(4)    F(5)'
+
+do coeffs = 1,6
+
+  if coeffs == 1 ; com coeffs_x1 = || 0.0, 0.0 ||  , coeffs_x2 = || 0.0, 0.0 ||
+  if coeffs == 2 ; com coeffs_x1 = || 0.5, 0.3 ||  , coeffs_x2 = || 0.3, 0.5 ||
+  if coeffs == 3 ; com coeffs_x1 = || 0.6, 0.2 ||  , coeffs_x2 = || 0.2, 0.6 ||
+  if coeffs == 4 ; com coeffs_x1 = || 0.6, 0.3 ||  , coeffs_x2 = || 0.3, 0.6 ||
+  if coeffs == 5 ; com coeffs_x1 = || 0.7, 0.2 ||  , coeffs_x2 = || 0.2, 0.7 ||
+  if coeffs == 6 ; com coeffs_x1 = || 0.6, -0.3 || , coeffs_x2 = || -0.3, 0.6 ||
+
+
+  equation(coeffs=coeffs_x1,variance=1.0,regressors) var1 x1
+  #  x1{1} x2{1}
+  equation(coeffs=coeffs_x2,variance=1.0,regressors) var2 x2
+  #  x1{1} x2{1}
+  group var var1 var2
+
+   set f_num 1 nstar+1 = 0
+
+* Estimate the system
+  com nreps = 5000
+  com gc_hits10 = 0.
+  do i = 1,nreps
+    simulate(model=var,from=2,steps=cap_t,results=x,cv=vmatrix)
+
+  com hit = 0
+/*
+      lin(noprint) x(1) ; # x(1){1} x(2){1} reglist5
+        exc(noprint) ; # reglist5
+        if %signif < 0.1 ; com hit = 1, freq = 0
+      if hit == 0 { ; lin(noprint) x(1) ; # x(1){1} x(2){1} reglist5
+        exc(noprint) ; # sine(5) cosine(5)
+        if %signif < 0.1 ; com hit = 1, freq = 5 ; }
+      if hit == 0 { ; lin(noprint) x(1) ; # x(1){1} x(2){1} reglist4
+        exc(noprint) ; # sine(4) cosine(4)
+        if %signif < 0.1 ; com hit = 1 , freq = 4 ; }
+*/
+      lin(noprint) x(1) ; # x(1){1} x(2){1} reglist3
+        exc(noprint) ; # reglist3
+        if %signif > 0.1 ; com hit = 1, freq = 0
+      if hit == 0 ;  lin(noprint) x(1) ; # x(1){1} x(2){1} reglist3
+        exc(noprint) ; # sine(3) cosine(3)
+        if %signif < 0.1 ; com hit = 1, freq = 3
+      if hit == 0 { ; lin(noprint) x(1) ; # x(1){1} x(2){1} reglist2
+        exc(noprint) ; # sine(2) cosine(2)
+        if %signif < 0.1 ; com hit = 1 , freq = 2 ; }
+      if hit == 0 { ; lin(noprint) x(1) ; # x(1){1} x(2){1} reglist1
+        exc(noprint) ; # sine(1) cosine(1)
+        if %signif < 0.1 ; com hit = 1, freq = 1 ; }
+      if hit == 0 ; com freq = 0
+
+       if freq == 0 ; enter(varying) reglist ; # reglist0
+       if freq == 1 ; enter(varying) reglist ; # reglist1
+       if freq == 2 ; enter(varying) reglist ; # reglist2
+       if freq == 3 ; enter(varying) reglist ; # reglist3
+*       if freq == 4 ; enter(varying) reglist ; # reglist4
+*       if freq == 5 ; enter(varying) reglist ; # reglist5
+
+
+       com f_num(freq+1) = f_num(freq+1) + 1
+       lin(noprint) x(1) ; # x(1){1} x(2){1} reglist
+       if abs(%tstats(2)) > 1.64 ; com gc_hits10 = gc_hits10 + 1
+
+       end do i
+
+    dis coeffs ###.### gc_hits10/nreps f_num(1)/nreps f_num(2)/nreps f_num(3)/nreps f_num(4)/nreps ; * f_num(5)/nreps f_num(6)/nreps
+
+  end do coeffs
+
+ dis 'N Reps = ' nreps  ; dis "   "
+
+
+
+
+

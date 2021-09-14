@@ -1,0 +1,511 @@
+CALENDAR(M) 1974:01
+all 2012:12
+open data c:\DATA\COMMOD_WB_BASIC_9.xls
+data(org=cols,format=xls)
+table
+
+*print(window="Data") / ACQCOST OILPROD FREIGHT grain food maize CPI
+
+*
+* Construct the log price data
+*
+set olp = log(OILPROD)		;    * World oil production
+set pol = ACQCOST			;    * The price of crude oil
+set frt = FREIGHT			;	* The ocean freight rate index
+set pcr = maize			;	* The price of maize
+
+*
+* Take natural logs of each price index
+*
+
+dofor i = pol to pcr				; * loop over the newly created price data
+  dis i
+  set y1 = i{0}
+  set %s(%l(i)) = log(y1/(CPI/100.))	; * Create an index by dividing by the
+  								; * unit value, and takning the log.
+  								; * Note: %s(l(i)) keeps the same label
+  								; * and the same number as the original
+  								; * series.
+end dofor i
+
+com labels1 = ||'Oil Price','Freight','Maize'||
+
+graph(hea="log Real Commodity Price",klabels=labels1,key=below,vlabel="log(pi/ppi)", $
+  hlabel="Time",nokbox,noaxis,style=line) 3;
+  # pol ; # frt ; # pcr
+
+set trnd = t						; * Set a linear trend
+
+set rea = frt
+set rpo = pol
+set rpm = pcr
+set prod = (olp{0} - olp{1})
+sta prod
+set prod = (prod-0.00067)/%variance^0.5
+sta rea
+set rea = (rea-0.405956)/%variance^0.5
+sta rpo
+set rpo = (rpo-2.961941)/%variance^0.5
+sta rpm
+set rpm = (rpm-4.529873)/%variance^0.5
+
+gra 1; # prod
+gra 1; # olp
+gra 1; # rea
+gra 1; # rpo
+gra 1; # rpm
+
+dec vector[integer] reglist reglist0  reglist1 reglist2 reglist3 reglist4 reglist5
+dec vector[series] sine(nstar) cosine(nstar) x(2)  break(7)
+
+* Create the trig functions
+
+dec vector[series] sine(nstar) cosine(nstar)
+com reglist0 = || constant | trend ||
+do k = 1,nstar
+  set sine(k) = sin(2*%pi*k*t/%nobs) ; set cosine(k) = cos(2*%pi*k*t/%nobs)
+end do k
+enter(varying) reglist1 ; # reglist0 sine(1) cosine(1)
+enter(varying) reglist2 ; # reglist1 sine(2) cosine(2)
+enter(varying) reglist3 ; # reglist2 sine(3) cosine(3)
+
+spgraph(hfields=2,vfields=1)
+lin olp /
+# reglist3
+prj fitted
+gra(hea="Panel A: Oil Production in Levels") 2; # olp; # fitted
+
+lin prod /
+# reglist3
+prj fitted
+gra(hea="Panel B: Oil Production in First Differences") 2; # prod; # fitted 2 *
+spgraph(done)
+
+spgraph(hfields=3,vfields=1)
+lin rea /
+# reglist3
+prj fitted
+gra(hea="Panel C: Real Economic Activity") 2; # rea; # fitted
+lin rpo /
+# reglist3
+prj fitted
+gra(hea="Panel D: Real Price of Oil") 2; # rpo; # fitted
+lin rpm /
+# reglist3
+prj fitted
+gra(hea="Panel E: Real Price of Maize") 2; # rpm; # fitted
+spgraph(done)
+*
+* Define a reglist that contains the optimal number
+* of cumulated frequencies from a Fourier approximation
+*
+seasonal seas
+dec vector[series] mdum(12)
+dec vector[integer] seaslist(0)
+do i=1,12
+  com jm = -12 + i
+  set mdum(i) = seas{jm}
+  if i .le. 11 {
+    enter(varying) seaslist; # seaslist mdum(i)
+  }
+end do i
+
+set trend = t
+com nstar = 3
+
+
+@varlagselect(crit=gtos,lags=12)
+# prod rea rpo rpm
+
+system(model=varmodel)
+variables prod rea rpo rpm
+lags 1 2 3 4 5 6 7 8 9 10 11
+det constant seaslist
+end(system)
+estimate(resids=resids,nopri,ftests) /
+
+source mcvardodraws.src
+@mcvardodraws(model=varmodel,draws=2000,step=24)
+@mcgraphirf(model=varmodel,center=median,percent=||.025,.975||,footer="95% Monte Carlo bands")
+@MCGraphIRF1(model=varmodel,SHOCKLABELS=||'Oil Supply Shock','Aggregate Demand Shock','Oil-specific Demand Shock','Maize-specific Demand Shock'||,varlabels=||'Oil Production','Real Activity','Real Price of Oil','Real Price of Maize'||)
+
+
+
+system(model=varmodel)
+variables prod rea rpo rpm
+lags 1 2 3 4 5 6 7 8 9 10 11
+det reglist3 seaslist
+end(system)
+estimate(resids=resids,nopri,ftests) /
+
+lin(define=eq1r) prod /
+  # constant prod{1 to 4} seaslist
+set e1 = %resids
+lin(noprint,define=eq2r) rea /
+  # constant rea{1 to 4} seaslist
+set e2 = %resids
+lin(noprint,define=eq3r) rpo /
+  # constant rpo{1 to 4} seaslist
+set e3 = %resids
+lin(noprint,define=eq4r) rpm /
+  # constant rpm{1 to 4} rea{1 to 4} seaslist
+set e4 = %resids
+
+group whoknows eq1r eq2r eq3r eq4r
+sur(model=whoknows,cvout=v)
+errors(impulses,model=whoknows) 4 24 v
+
+
+compute lags=11			   ;*Number of lags
+compute steps=16		   ;*Number of response steps
+compute nburn =5000		;*Burn-in draws
+compute ndraws=25000		;*Keeper draws
+*
+*
+compute nvar=%modelsize(whoknows)
+*
+* Do set up for Gibbs sampling on SUR model
+*
+@SURGibbsSetup whoknows
+**********************************************
+*
+* Do a SUR to get a set of estimates to initialize the Gibbs sampler.
+*
+sur(model=whoknows)
+compute ntotal=%nreg
+compute bdraw=%beta
+compute wishdof=%nobs
+*
+* For saving the IRF's
+*
+declare vect[rect] %%responses(ndraws)
+*
+infobox(action=define,progress,lower=-nburn,upper=ndraws) $
+    "Gibbs Sampling"
+do draw=-nburn,ndraws
+   *
+   * Compute covariance matrix of residuals at the current beta
+   *
+   compute covmat=SURGibbsSigma(bdraw)
+   *
+   * Do a draw for the precision matrix conditional on beta
+   *
+   compute hdraw=%ranwishartf(%decomp(inv(covmat)),wishdof)
+   *
+   * Compute the required information with the interaction between
+   * the precision matrix and the data
+   *
+   @SURGibbsDataInfo hdraw hdata hbdata
+   *
+   * Draw coefficients given the precision matrix hdraw
+   *
+   compute hpost=hdata
+   compute vpost=inv(hpost)
+   compute bpost=vpost*hbdata
+   compute bdraw=bpost+%ranmvnormal(%decomp(vpost))
+   infobox(current=draw)
+   if draw<=0
+      next
+   *
+   * Do the bookkeeping here.
+   *
+   compute %modelsetcoeffs(whoknows,bdraw)
+   impulse(noprint,model=whoknows,factor=%decomp(inv(hdraw)),results=impulses,steps=steps)
+   *
+   * Store the impulse responses
+   *
+   dim %%responses(draw)(nvar*nvar,steps)
+   ewise %%responses(draw)(i,j)=ix=%vec(%xt(impulses,j)),ix(i)
+end do draw
+infobox(action=remove)
+@MCGraphIRF(model=whoknows,center=median,page=all)
+@MCGraphIRF1(model=varmodel,SHOCKLABELS=||'Oil Supply Shock','Aggregate Demand Shock','Oil-specific Demand Shock','Maize-specific Demand Shock'||,varlabels=||'Oil Production','Real Activity','Real Price of Oil','Real Price of Maize'||)
+
+
+*
+* Estimate the restricted VAR
+*
+
+lin(define=eq1r) prod /
+  # prod{1 to 11} rea{1 to 11} seaslist reglist3
+set e1 = %resids
+lin(noprint,define=eq2r) rea /
+  # rea{1 to 11} rpo{1 to 11} seaslist reglist3
+set e2 = %resids
+lin(noprint,define=eq3r) rpo /
+  # rpo{1 to 11} rpm{1 to 11} seaslist reglist3
+set e3 = %resids
+lin(noprint,define=eq4r) rpm /
+  # rea{1 to 11} rpm{1 to 11} seaslist reglist3
+set e4 = %resids
+
+group whoknows eq1r eq2r eq3r eq4r
+sur(model=whoknows,cvout=v)
+errors(impulses,model=whoknows) 4 24 v
+
+compute lags=11			   ;*Number of lags
+compute steps=16		   ;*Number of response steps
+compute nburn =5000		;*Burn-in draws
+compute ndraws=25000		;*Keeper draws
+*
+*
+compute nvar=%modelsize(whoknows)
+*
+* Do set up for Gibbs sampling on SUR model
+*
+@SURGibbsSetup whoknows
+**********************************************
+*
+* Do a SUR to get a set of estimates to initialize the Gibbs sampler.
+*
+sur(model=whoknows)
+compute ntotal=%nreg
+compute bdraw=%beta
+compute wishdof=%nobs
+*
+* For saving the IRF's
+*
+declare vect[rect] %%responses(ndraws)
+*
+infobox(action=define,progress,lower=-nburn,upper=ndraws) $
+    "Gibbs Sampling"
+do draw=-nburn,ndraws
+   *
+   * Compute covariance matrix of residuals at the current beta
+   *
+   compute covmat=SURGibbsSigma(bdraw)
+   *
+   * Do a draw for the precision matrix conditional on beta
+   *
+   compute hdraw=%ranwishartf(%decomp(inv(covmat)),wishdof)
+   *
+   * Compute the required information with the interaction between
+   * the precision matrix and the data
+   *
+   @SURGibbsDataInfo hdraw hdata hbdata
+   *
+   * Draw coefficients given the precision matrix hdraw
+   *
+   compute hpost=hdata
+   compute vpost=inv(hpost)
+   compute bpost=vpost*hbdata
+   compute bdraw=bpost+%ranmvnormal(%decomp(vpost))
+   infobox(current=draw)
+   if draw<=0
+      next
+   *
+   * Do the bookkeeping here.
+   *
+   compute %modelsetcoeffs(whoknows,bdraw)
+   impulse(noprint,model=whoknows,factor=%decomp(inv(hdraw)),results=impulses,steps=steps)
+   *
+   * Store the impulse responses
+   *
+   dim %%responses(draw)(nvar*nvar,steps)
+   ewise %%responses(draw)(i,j)=ix=%vec(%xt(impulses,j)),ix(i)
+end do draw
+infobox(action=remove)
+@MCGraphIRF(model=whoknows,center=median,page=all)
+@MCGraphIRF1(model=varmodel,SHOCKLABELS=||'Oil Supply Shock','Aggregate Demand Shock','Oil-specific Demand Shock','Maize-specific Demand Shock'||,varlabels=||'Oil Production','Real Activity','Real Price of Oil','Real Price of Maize'||)
+
+
+*****Trig Terms without differening oil prod*********
+
+linreg prod
+# olp{1} prod{1 to 12} reglist3
+
+sta olp ; set olp = 8*olp/%variance^0.5
+
+system(model=varmodel)
+variables olp rea rpo rpm
+lags 1 2 3 4 5 6 7 8 9 10 11
+det reglist3 seaslist
+end(system)
+estimate(resids=resids,nopri,ftests) /
+
+lin(define=eq1r) olp /
+  # olp{1 to 11} seaslist reglist3
+set e1 = %resids
+lin(noprint,define=eq2r) rea /
+  # rea{1 to 11} rpo{1 to 11} seaslist reglist3
+set e2 = %resids
+lin(noprint,define=eq3r) rpo /
+  # rpo{1 to 11} rpm{1 to 11} seaslist reglist3
+set e3 = %resids
+lin(noprint,define=eq4r) rpm /
+  # rea{1 to 11} rpm{1 to 11} seaslist reglist3
+set e4 = %resids
+
+group whoknows eq1r eq2r eq3r eq4r
+sur(model=whoknows,cvout=v)
+errors(impulses,model=whoknows) 4 24 v
+
+compute lags=11			   ;*Number of lags
+compute steps=16		   ;*Number of response steps
+compute nburn =5000		;*Burn-in draws
+compute ndraws=25000		;*Keeper draws
+*
+*
+compute nvar=%modelsize(whoknows)
+*
+* Do set up for Gibbs sampling on SUR model
+*
+@SURGibbsSetup whoknows
+**********************************************
+*
+* Do a SUR to get a set of estimates to initialize the Gibbs sampler.
+*
+sur(model=whoknows)
+compute ntotal=%nreg
+compute bdraw=%beta
+compute wishdof=%nobs
+*
+* For saving the IRF's
+*
+declare vect[rect] %%responses(ndraws)
+*
+infobox(action=define,progress,lower=-nburn,upper=ndraws) $
+    "Gibbs Sampling"
+do draw=-nburn,ndraws
+   *
+   * Compute covariance matrix of residuals at the current beta
+   *
+   compute covmat=SURGibbsSigma(bdraw)
+   *
+   * Do a draw for the precision matrix conditional on beta
+   *
+   compute hdraw=%ranwishartf(%decomp(inv(covmat)),wishdof)
+   *
+   * Compute the required information with the interaction between
+   * the precision matrix and the data
+   *
+   @SURGibbsDataInfo hdraw hdata hbdata
+   *
+   * Draw coefficients given the precision matrix hdraw
+   *
+   compute hpost=hdata
+   compute vpost=inv(hpost)
+   compute bpost=vpost*hbdata
+   compute bdraw=bpost+%ranmvnormal(%decomp(vpost))
+   infobox(current=draw)
+   if draw<=0
+      next
+   *
+   * Do the bookkeeping here.
+   *
+   compute %modelsetcoeffs(whoknows,bdraw)
+   impulse(noprint,model=whoknows,factor=%decomp(inv(hdraw)),results=impulses,steps=steps)
+   *
+   * Store the impulse responses
+   *
+   dim %%responses(draw)(nvar*nvar,steps)
+   ewise %%responses(draw)(i,j)=ix=%vec(%xt(impulses,j)),ix(i)
+end do draw
+infobox(action=remove)
+@MCGraphIRF(model=whoknows,center=median,page=all)
+@MCGraphIRF1(model=varmodel,SHOCKLABELS=||'Oil Supply Shock','Aggregate Demand Shock','Oil-specific Demand Shock','Maize-specific Demand Shock'||,varlabels=||'Oil Production','Real Activity','Real Price of Oil','Real Price of Maize'||)
+
+
+
+*****Trig Terms differening oil prod and oil price*********
+
+
+set drpo = (rpo{0} - rpo{1})
+sta drpo ; set drpo = drpo/%variance^0.5
+
+
+system(model=varmodel)
+variables prod rea drpo rpm
+lags 1 2 3 4 5 6 7 8 9 10 11
+det reglist3 seaslist
+end(system)
+estimate(resids=resids,nopri,ftests) /
+
+lin(define=eq1r) prod /
+  # prod{1 to 11} seaslist reglist3
+set e1 = %resids
+lin(noprint,define=eq2r) rea /
+  # rea{1 to 11} seaslist reglist3
+set e2 = %resids
+lin(noprint,define=eq3r) drpo /
+  # drpo{1 to 11} seaslist reglist3
+set e3 = %resids
+lin(noprint,define=eq4r) rpm /
+  # rea{1 to 11} rpm{1 to 11} seaslist reglist3
+set e4 = %resids
+
+group whoknows eq1r eq2r eq3r eq4r
+sur(model=whoknows,cvout=v)
+errors(impulses,model=whoknows) 4 24 v
+
+compute lags=11			   ;*Number of lags
+compute steps=16		   ;*Number of response steps
+compute nburn =5000		;*Burn-in draws
+compute ndraws=25000		;*Keeper draws
+*
+*
+compute nvar=%modelsize(whoknows)
+*
+* Do set up for Gibbs sampling on SUR model
+*
+@SURGibbsSetup whoknows
+**********************************************
+*
+* Do a SUR to get a set of estimates to initialize the Gibbs sampler.
+*
+sur(model=whoknows)
+compute ntotal=%nreg
+compute bdraw=%beta
+compute wishdof=%nobs
+*
+* For saving the IRF's
+*
+declare vect[rect] %%responses(ndraws)
+*
+infobox(action=define,progress,lower=-nburn,upper=ndraws) $
+    "Gibbs Sampling"
+do draw=-nburn,ndraws
+   *
+   * Compute covariance matrix of residuals at the current beta
+   *
+   compute covmat=SURGibbsSigma(bdraw)
+   *
+   * Do a draw for the precision matrix conditional on beta
+   *
+   compute hdraw=%ranwishartf(%decomp(inv(covmat)),wishdof)
+   *
+   * Compute the required information with the interaction between
+   * the precision matrix and the data
+   *
+   @SURGibbsDataInfo hdraw hdata hbdata
+   *
+   * Draw coefficients given the precision matrix hdraw
+   *
+   compute hpost=hdata
+   compute vpost=inv(hpost)
+   compute bpost=vpost*hbdata
+   compute bdraw=bpost+%ranmvnormal(%decomp(vpost))
+   infobox(current=draw)
+   if draw<=0
+      next
+   *
+   * Do the bookkeeping here.
+   *
+   compute %modelsetcoeffs(whoknows,bdraw)
+   impulse(noprint,model=whoknows,factor=%decomp(inv(hdraw)),results=impulses,steps=steps)
+   *
+   * Store the impulse responses
+   *
+   dim %%responses(draw)(nvar*nvar,steps)
+   ewise %%responses(draw)(i,j)=ix=%vec(%xt(impulses,j)),ix(i)
+end do draw
+infobox(action=remove)
+@MCGraphIRF(model=whoknows,center=median,page=all)
+
+
+
+
+
+
+
+

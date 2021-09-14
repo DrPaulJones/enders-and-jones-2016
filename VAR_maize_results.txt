@@ -1,0 +1,324 @@
+***** Program XLXL
+CALENDAR(M) 1974:01
+all 2012:12
+open data c:\DATA\COMMOD_WB_BASIC_9.xls
+data(org=cols,format=xls)
+
+table
+
+print(window="Data") / ACQCOST OILPROD FREIGHT grain food maize CPI
+
+open styles c:\data\graphstyles_06_11_11_1.txt
+grparm(import=styles)
+
+*
+* Construct the log price data
+*
+set olp = log(OILPROD)		;    * World oil production
+set pol = ACQCOST			;    * The price of crude oil
+set frt = FREIGHT			;	* The ocean freight rate index
+set pcr = maize			;	* The price of maize
+
+seasonal seas
+
+*
+* Take natural logs of each price index
+*
+
+dofor i = pol to pcr				; * loop over the newly created price data
+  dis i
+  set y1 = i{0}
+  set %s(%l(i)) = log(y1/(CPI/100.))	; * Create an index by dividing by the
+  								; * unit value, and takning the log.
+  								; * Note: %s(l(i)) keeps the same label
+  								; * and the same number as the original
+  								; * series.
+end dofor i
+
+open styles c:\data\graphstyles_11_14_12_1.txt
+grparm(import=styles)
+
+com labels1 = ||'Oil Price','Freight','Maize'||
+
+grparm(font="Garamond",bold) header 16
+grparm(font="Garamond",bold) vlabel 16
+grparm(font="Garamond",bold) hlabel 16
+grparm(font="Garamond",bold) ovlabel 16
+grparm(font="Garamond",bold) keylabel 14
+
+graph(hea="log Real Commodity Price",klabels=labels1,key=below,vlabel="log(pi/ppi)", $
+  hlabel="Time",nokbox,noaxis,style=line) 3;
+  # pol ; # frt ; # pcr
+
+graph(hea="log Real Freight Rate",vlabel="log(frt/cpi)", $
+  hlabel="Time",nokbox,noaxis,style=line) 1;
+  # frt
+
+set trnd = t						; * Set a linear trend
+set trndsq = t*t
+set trndcu = t*t*t
+
+*
+* Determine the "normal" number of observations
+*
+
+linreg pol; # constant trnd pol{1 to 13}
+dis %regstart()
+dis %regend()
+com low = %regstart()				; * Note: Low contains the starting point in the sample consistint with AIC determination above
+com up  = %regend()					; * Note: Up contains the ending point in the sample
+com tnobs = %nobs
+dis "Total Obs." tnobs
+com tot = tnobs
+set st = trnd/tot					; * Set the rescaled trend as the transition variable
+dis 'Starting Obs = ' low
+dis 'Ending Obs = ' up
+
+set y1 = 100.*(olp{0} - olp{1})
+set y2 = frt
+set y3 = pol
+set y4 = pcr
+
+*
+* Define a reglist that contains the optimal number
+* of cumulated frequencies from a Fourier approximation
+*
+
+dec vector[series] mdum(12)
+dec vector[integer] seaslist(0)
+do i=1,12
+  com jm = -12 + i
+  set mdum(i) = seas{jm}
+  if i .le. 11 {
+    enter(varying) seaslist; # seaslist mdum(i)
+  }
+end do i
+
+*
+* Use SUR to determine the best value for p, the lag lenght of the VAR
+*
+
+report(action=define,hlabels=||"Lag","AIC","HQC","SBC","sig"||)
+
+compute optn = -10.0
+compute minAIC = 1000000.0
+compute minHQC = 1000000.0
+compute minSBC = 1000000.0
+compute lag = 13, sign = 0.5
+compute int = 0
+
+do k = 1,12
+  com int = int + 1
+  com i = lag - k
+  *
+  * Estimate the unrestricted model
+  *
+  lin(noprint,define=eq1u) y1 low up
+    # constant y1{1 to i} y2{1 to i} y3{1 to i} y4{1 to i} seaslist
+  lin(noprint,define=eq2u) y2 low up
+    # constant y1{1 to i} y2{1 to i} y3{1 to i} y4{1 to i} seaslist
+  lin(noprint,define=eq3u) y3 low up
+    # constant y1{1 to i} y2{1 to i} y3{1 to i} y4{1 to i} seaslist
+  lin(noprint,define=eq4u) y4 low up
+    # constant y1{1 to i} y2{1 to i} y3{1 to i} y4{1 to i} seaslist
+  sur(noprint,nosigma) 4 low up
+  # eq1u ; # eq2u ; # eq3u ; # eq4u
+  com lndet = %logdet
+  compute AIC = lndet + 2.0*%nreg/%nobs
+  compute HQC = lndet + %nreg*2.0*log(log(%nobs))/%nobs
+  compute SBC = lndet + %nreg*log(%nobs)/%nobs
+  com logdu = %logdet
+  com nparu = %nreg
+  *
+  * Estimate the restricted model
+  *
+  compute im1 = i - 1
+  lin(noprint,define=eq1r) y1 low up
+    # constant y1{1 to im1} y2{1 to im1} y3{1 to im1} y4{1 to im1} seaslist
+  lin(noprint,define=eq2r) y2 low up
+    # constant y1{1 to im1} y2{1 to im1} y3{1 to im1} y4{1 to im1} seaslist
+  lin(noprint,define=eq3r) y3 low up
+    # constant y1{1 to im1} y2{1 to im1} y3{1 to im1} y4{1 to im1} seaslist
+  lin(noprint,define=eq4r) y4 low up
+    # constant y1{1 to im1} y2{1 to im1} y3{1 to im1} y4{1 to im1} seaslist
+  sur(noprint,nosigma) 4 low up
+  # eq1r ; # eq2r ; # eq3r ; # eq4r
+  com logdr = %logdet
+  com nparr = %nreg
+  com eqnN  = 4.0
+  com T = %nobs
+  *
+  * Compute Rao's F
+  *
+  @raof
+  cdf(noprint) ftest lambdas idf1 idf2
+  com sign = %signif
+  dis 'i = ' i 'marginal sign = ' sign
+
+  report(row=new,atcol=1) i AIC HQC SBC sign
+
+  if sign .lt. 0.05 {
+    break
+  }
+end do k
+
+report(action=format,tag=minimum,special=onestar,atcol=2,tocol=2)
+report(action=format,tag=minimum,special=onestar,atcol=3,tocol=3)
+report(action=format,tag=minimum,special=onestar,atcol=4,tocol=4)
+
+report(action=format,picture="*.###",align=decimal)
+report(action=show,window='lag test results')
+
+*
+* Use the fix command to convert ILAG to an integer
+*
+
+compute ILAG = fix(i)
+dis ILAG
+
+dec vector[series] y1L(ILAG) y2L(ILAG) y3L(ILAG) y4L(ILAG)	 	; * Create a vector series to hold the lagged dependent variables
+dec vector[integer] prmlist(0)
+com icnt = 0
+do i = 1,ILAG
+  com icnt = icnt + 1
+  set y1L(icnt) = y1{i}
+  set y2L(icnt) = y2{i}
+  set y3L(icnt) = y3{i}
+  set y4L(icnt) = y4{i}
+end do i
+
+*
+* Do equation-by-equation Granger non-causality testing
+*
+
+*
+* The oil production equation
+*
+
+lin(noprint) y1 low up
+  # constant y1L y2L y3L y4L seaslist
+exclude(title='1. Oil Prod, Exclude Freight') ; # y2L
+exclude(title='1. Oil Prod, Exclude Oil Price') ; # y3L
+exclude(title='1. Oil Prod, Exclude Maize Price') ; # y4L
+
+*
+* The freight rate equation
+*
+
+lin(noprint) y2 low up
+  # constant y1L y2L y3L y4L seaslist
+exclude(title='2. Freight Rate, Exclude Oil Prod') ; # y1L
+exclude(title='2. Freight Rate, Exclude Oil Price') ; # y3L
+exclude(title='2. Freight Rate, Exclude Maize Price') ; # y4L
+
+*
+* The oil price equation
+*
+
+lin(noprint) y3 low up
+  # constant y1L y2L y3L y4L seaslist
+exclude(title='3. Oil Price, Exclude Oil Prod') ; # y1L
+exclude(title='3. Oil Price, Exclude Freight Rate') ; # y2L
+exclude(title='3. Oil Price, Exclude Maize Price') ; # y4L
+
+*
+* The maize price equation
+*
+
+lin(noprint) y4 low up
+  # constant y1L y2L y3L y4L seaslist
+exclude(title='4. Maize Price, Exclude Oil Prod') ; # y1L
+exclude(title='4. Maize Price, Exclude Freight Rate') ; # y2L
+exclude(title='4. Maize Price, Exclude Oil Price') ; # y3L
+
+*
+* Estimate the unrestricted VAR
+*
+
+lin(noprint,define=eq1u) y1 low up
+  # constant y1L y2L y3L y4L seaslist
+set e1 = %resids
+lin(noprint,define=eq2u) y2 low up
+  # constant y1L y2L y3L y4L seaslist
+set e2 = %resids
+lin(noprint,define=eq3u) y3 low up
+  # constant y1L y2L y3L y4L seaslist
+set e3 = %resids
+lin(noprint,define=eq4u) y4 low up
+  # constant y1L y2L y3L y4L seaslist
+set e4 = %resids
+
+sur(noprint) 4 low up
+  # eq1u ; # eq2u ; # eq3u ; # eq4u
+com logdu = %logdet
+com nparu = %nreg
+
+*
+* Perform the test of diagonal covariance matrix
+*
+
+sstats low up e1*e1>>var1	; * The >> operator takes the summation of a variable over the specified range
+sstats low up e2*e2>>var2
+sstats low up e3*e3>>var3
+sstats low up e4*e4>>var4
+sstats low up e2*e1>>cov21
+sstats low up e3*e1>>cov31
+sstats low up e3*e2>>cov32
+sstats low up e4*e1>>cov41
+sstats low up e4*e2>>cov42
+sstats low up e4*e3>>cov43
+com var1 = var1/tnobs
+com var2 = var2/tnobs
+com var3 = var3/tnobs
+com var4 = var4/tnobs
+com cov21 = cov21/tnobs
+com cov31 = cov31/tnobs
+com cov32 = cov32/tnobs
+com cov41 = cov41/tnobs
+com cov42 = cov42/tnobs
+com cov43 = cov43/tnobs
+com cor21 = cov21/((var1*var2)**0.5)
+com cor31 = cov31/((var1*var3)**0.5)
+com cor32 = cov32/((var2*var3)**0.5)
+com cor41 = cov41/((var1*var4)**0.5)
+com cor42 = cov42/((var2*var4)**0.5)
+com cor43 = cov43/((var3*var4)**0.5)
+com LM = tnobs*(cor21**2.+cor31**2.+cor32**2.+cor41**2.+cor42**2.+cor43**2.)
+dis cor21 cor31 cor32 cor41 cor42 cor43
+dis LM
+cdf(title='LM Test of Zero Correlations') chisqr LM 6
+
+*
+* Estimate the restricted VAR
+*
+
+lin(noprint,define=eq1r) y1 low up
+  # constant y1L seaslist
+set e1 = %resids
+lin(noprint,define=eq2r) y2 low up
+  # constant y2L seaslist
+set e2 = %resids
+lin(noprint,define=eq3r) y3 low up
+  # constant y3L seaslist
+set e3 = %resids
+lin(noprint,define=eq4r) y4 low up
+  # constant y2L y4L seaslist
+set e4 = %resids
+
+sur 4 low up
+  # eq1r ; # eq2r ; # eq3r ; # eq4r
+com logdr = %logdet
+com nparr = %nreg
+com eqnN  = 4.0
+com T = %nobs
+
+*
+* Compute Rao's F for system Granger non-causality
+*
+
+@raof
+cdf ftest lambdas idf1 idf2
+com sign = %signif
+dis 'Rao FLM = ' lambdas 'marginal sign = ' sign
+
+

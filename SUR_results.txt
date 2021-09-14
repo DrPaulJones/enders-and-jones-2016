@@ -1,0 +1,383 @@
+***** Program XLXL
+CALENDAR(M) 1974:01
+all 2012:12
+open data c:\DATA\COMMOD_WB_BASIC_9.xls
+data(org=cols,format=xls)
+table
+
+*print(window="Data") / ACQCOST OILPROD FREIGHT grain food maize CPI
+
+*
+* Construct the log price data
+*
+set olp = log(OILPROD)		;    * World oil production
+set pol = ACQCOST			;    * The price of crude oil
+set frt = FREIGHT			;	* The ocean freight rate index
+set pcr = maize			;	* The price of maize
+
+*
+* Take natural logs of each price index
+*
+
+dofor i = pol to pcr				; * loop over the newly created price data
+  dis i
+  set y1 = i{0}
+  set %s(%l(i)) = log(y1/(CPI/100.))	; * Create an index by dividing by the
+  								; * unit value, and takning the log.
+  								; * Note: %s(l(i)) keeps the same label
+  								; * and the same number as the original
+  								; * series.
+end dofor i
+
+com labels1 = ||'Oil Price','Freight','Maize'||
+
+graph(hea="log Real Commodity Price",klabels=labels1,key=below,vlabel="log(pi/ppi)", $
+  hlabel="Time",nokbox,noaxis,style=line) 3;
+  # pol ; # frt ; # pcr
+
+set trnd = t						; * Set a linear trend
+
+set prod = (olp{0} - olp{1})
+sta prod ; set prod = prod/%variance^0.5
+
+
+set rea = frt
+set rpo = pol
+set rpm = pcr
+pri 1 10 prod olp
+*
+* Define a reglist that contains the optimal number
+* of cumulated frequencies from a Fourier approximation
+*
+seasonal seas
+dec vector[series] mdum(12)
+dec vector[integer] seaslist(0)
+do i=1,12
+  com jm = -12 + i
+  set mdum(i) = seas{jm}
+  if i .le. 11 {
+    enter(varying) seaslist; # seaslist mdum(i)
+  }
+end do i
+
+set trend = t
+com nstar = 3
+
+
+@varlagselect(crit=gtos,lags=12)
+# prod rea rpo rpm
+
+system(model=varmodel)
+variables prod rea rpo rpm
+lags 1 2 3 4 5 6 7 8 9 10 11
+det constant seaslist
+end(system)
+estimate(resids=resids,nopri,ftests) /
+
+source mcvardodraws.src
+@mcvardodraws(model=varmodel,draws=2000,step=24)
+
+@mcgraphirf(model=varmodel,center=median,percent=||.025,.0975||,footer="95% Monte Carlo bands")
+
+dec vector[integer] reglist reglist0  reglist1 reglist2 reglist3 reglist4 reglist5
+dec vector[series] sine(nstar) cosine(nstar) x(2)  break(7)
+
+* Create the trig functions
+
+dec vector[series] sine(nstar) cosine(nstar)
+com reglist0 = || constant | trend ||
+do k = 1,nstar
+  set sine(k) = sin(2*%pi*k*t/%nobs) ; set cosine(k) = cos(2*%pi*k*t/%nobs)
+end do k
+enter(varying) reglist1 ; # reglist0 sine(1) cosine(1)
+enter(varying) reglist2 ; # reglist1 sine(2) cosine(2)
+enter(varying) reglist3 ; # reglist2 sine(3) cosine(3)
+
+
+system(model=varmodel)
+variables prod rea rpo rpm
+lags 1 2 3 4 5 6 7 8 9 10 11
+det reglist3 seaslist
+end(system)
+estimate(resids=resids,nopri,ftests) /
+
+lin(define=eq1r) prod /
+  # constant prod{1 to 4} seaslist
+set e1 = %resids
+lin(noprint,define=eq2r) rea /
+  # constant rea{1 to 4} seaslist
+set e2 = %resids
+lin(noprint,define=eq3r) rpo /
+  # constant rpo{1 to 4} seaslist
+set e3 = %resids
+lin(noprint,define=eq4r) rpm /
+  # constant rpm{1 to 4} rea{1 to 4} seaslist
+set e4 = %resids
+
+group whoknows eq1r eq2r eq3r eq4r
+sur(model=whoknows,cvout=v)
+errors(impulses,model=whoknows) 4 24 v
+
+
+compute lags=11			   ;*Number of lags
+compute steps=16		   ;*Number of response steps
+compute nburn =5000		;*Burn-in draws
+compute ndraws=25000		;*Keeper draws
+*
+*
+compute nvar=%modelsize(whoknows)
+*
+* Do set up for Gibbs sampling on SUR model
+*
+@SURGibbsSetup whoknows
+**********************************************
+*
+* Do a SUR to get a set of estimates to initialize the Gibbs sampler.
+*
+sur(model=whoknows)
+compute ntotal=%nreg
+compute bdraw=%beta
+compute wishdof=%nobs
+*
+* For saving the IRF's
+*
+declare vect[rect] %%responses(ndraws)
+*
+infobox(action=define,progress,lower=-nburn,upper=ndraws) $
+    "Gibbs Sampling"
+do draw=-nburn,ndraws
+   *
+   * Compute covariance matrix of residuals at the current beta
+   *
+   compute covmat=SURGibbsSigma(bdraw)
+   *
+   * Do a draw for the precision matrix conditional on beta
+   *
+   compute hdraw=%ranwishartf(%decomp(inv(covmat)),wishdof)
+   *
+   * Compute the required information with the interaction between
+   * the precision matrix and the data
+   *
+   @SURGibbsDataInfo hdraw hdata hbdata
+   *
+   * Draw coefficients given the precision matrix hdraw
+   *
+   compute hpost=hdata
+   compute vpost=inv(hpost)
+   compute bpost=vpost*hbdata
+   compute bdraw=bpost+%ranmvnormal(%decomp(vpost))
+   infobox(current=draw)
+   if draw<=0
+      next
+   *
+   * Do the bookkeeping here.
+   *
+   compute %modelsetcoeffs(whoknows,bdraw)
+   impulse(noprint,model=whoknows,factor=%decomp(inv(hdraw)),results=impulses,steps=steps)
+   *
+   * Store the impulse responses
+   *
+   dim %%responses(draw)(nvar*nvar,steps)
+   ewise %%responses(draw)(i,j)=ix=%vec(%xt(impulses,j)),ix(i)
+end do draw
+infobox(action=remove)
+@MCGraphIRF(model=whoknows,center=median,page=all)
+
+*
+* Estimate the restricted VAR
+*
+
+lin(define=eq1r) prod /
+  # prod{1 to 11} rea{1 to 11} seaslist reglist3
+set e1 = %resids
+lin(noprint,define=eq2r) rea /
+  # rea{1 to 11} rpo{1 to 11} seaslist reglist3
+set e2 = %resids
+lin(noprint,define=eq3r) rpo /
+  # rpo{1 to 11} rpm{1 to 11} seaslist reglist3
+set e3 = %resids
+lin(noprint,define=eq4r) rpm /
+  # rea{1 to 11} rpm{1 to 11} seaslist reglist3
+set e4 = %resids
+
+group whoknows eq1r eq2r eq3r eq4r
+sur(model=whoknows,cvout=v)
+errors(impulses,model=whoknows) 4 24 v
+
+compute lags=11			   ;*Number of lags
+compute steps=16		   ;*Number of response steps
+compute nburn =5000		;*Burn-in draws
+compute ndraws=25000		;*Keeper draws
+*
+*
+compute nvar=%modelsize(whoknows)
+*
+* Do set up for Gibbs sampling on SUR model
+*
+@SURGibbsSetup whoknows
+**********************************************
+*
+* Do a SUR to get a set of estimates to initialize the Gibbs sampler.
+*
+sur(model=whoknows)
+compute ntotal=%nreg
+compute bdraw=%beta
+compute wishdof=%nobs
+*
+* For saving the IRF's
+*
+declare vect[rect] %%responses(ndraws)
+*
+infobox(action=define,progress,lower=-nburn,upper=ndraws) $
+    "Gibbs Sampling"
+do draw=-nburn,ndraws
+   *
+   * Compute covariance matrix of residuals at the current beta
+   *
+   compute covmat=SURGibbsSigma(bdraw)
+   *
+   * Do a draw for the precision matrix conditional on beta
+   *
+   compute hdraw=%ranwishartf(%decomp(inv(covmat)),wishdof)
+   *
+   * Compute the required information with the interaction between
+   * the precision matrix and the data
+   *
+   @SURGibbsDataInfo hdraw hdata hbdata
+   *
+   * Draw coefficients given the precision matrix hdraw
+   *
+   compute hpost=hdata
+   compute vpost=inv(hpost)
+   compute bpost=vpost*hbdata
+   compute bdraw=bpost+%ranmvnormal(%decomp(vpost))
+   infobox(current=draw)
+   if draw<=0
+      next
+   *
+   * Do the bookkeeping here.
+   *
+   compute %modelsetcoeffs(whoknows,bdraw)
+   impulse(noprint,model=whoknows,factor=%decomp(inv(hdraw)),results=impulses,steps=steps)
+   *
+   * Store the impulse responses
+   *
+   dim %%responses(draw)(nvar*nvar,steps)
+   ewise %%responses(draw)(i,j)=ix=%vec(%xt(impulses,j)),ix(i)
+end do draw
+infobox(action=remove)
+@MCGraphIRF(model=whoknows,center=median,page=all)
+
+
+*****Trig Terms without differening oil prod*********
+
+linreg prod
+# olp{1} prod{1 to 12}
+
+system(model=varmodel)
+variables olp rea rpo rpm
+lags 1 2 3 4 5 6 7 8 9 10 11
+det reglist3 seaslist
+end(system)
+estimate(resids=resids,nopri,ftests) /
+
+lin(define=eq1r) olp /
+  # olp{1 to 11} seaslist reglist3
+set e1 = %resids
+lin(noprint,define=eq2r) rea /
+  # rea{1 to 11} rpo{1 to 11} seaslist reglist3
+set e2 = %resids
+lin(noprint,define=eq3r) rpo /
+  # rpo{1 to 11} rpm{1 to 11} seaslist reglist3
+set e3 = %resids
+lin(noprint,define=eq4r) rpm /
+  # rea{1 to 11} rpm{1 to 11} seaslist reglist3
+set e4 = %resids
+
+group whoknows eq1r eq2r eq3r eq4r
+sur(model=whoknows,cvout=v)
+errors(impulses,model=whoknows) 4 24 v
+
+compute lags=11			   ;*Number of lags
+compute steps=16		   ;*Number of response steps
+compute nburn =5000		;*Burn-in draws
+compute ndraws=25000		;*Keeper draws
+*
+*
+compute nvar=%modelsize(whoknows)
+*
+* Do set up for Gibbs sampling on SUR model
+*
+@SURGibbsSetup whoknows
+**********************************************
+*
+* Do a SUR to get a set of estimates to initialize the Gibbs sampler.
+*
+sur(model=whoknows)
+compute ntotal=%nreg
+compute bdraw=%beta
+compute wishdof=%nobs
+*
+* For saving the IRF's
+*
+declare vect[rect] %%responses(ndraws)
+*
+infobox(action=define,progress,lower=-nburn,upper=ndraws) $
+    "Gibbs Sampling"
+do draw=-nburn,ndraws
+   *
+   * Compute covariance matrix of residuals at the current beta
+   *
+   compute covmat=SURGibbsSigma(bdraw)
+   *
+   * Do a draw for the precision matrix conditional on beta
+   *
+   compute hdraw=%ranwishartf(%decomp(inv(covmat)),wishdof)
+   *
+   * Compute the required information with the interaction between
+   * the precision matrix and the data
+   *
+   @SURGibbsDataInfo hdraw hdata hbdata
+   *
+   * Draw coefficients given the precision matrix hdraw
+   *
+   compute hpost=hdata
+   compute vpost=inv(hpost)
+   compute bpost=vpost*hbdata
+   compute bdraw=bpost+%ranmvnormal(%decomp(vpost))
+   infobox(current=draw)
+   if draw<=0
+      next
+   *
+   * Do the bookkeeping here.
+   *
+   compute %modelsetcoeffs(whoknows,bdraw)
+   impulse(noprint,model=whoknows,factor=%decomp(inv(hdraw)),results=impulses,steps=steps)
+   *
+   * Store the impulse responses
+   *
+   dim %%responses(draw)(nvar*nvar,steps)
+   ewise %%responses(draw)(i,j)=ix=%vec(%xt(impulses,j)),ix(i)
+end do draw
+infobox(action=remove)
+@MCGraphIRF(model=whoknows,center=median,page=all)
+
+
+
+set sin1 = sin(2*%pi*t/%nobs)
+set cos1 = cos(2*%pi*t/%nobs)
+com start = 1974:02
+      dif sin1 / dsin1 ; dif cos1 / dcos1
+      com k_min = 1
+      linreg prod
+      # constant  dsin1 dcos1
+      com phi1 = olp(start) - %beta(1) - %beta(2)*sin(2*%pi*k_min/%nobs) - %beta(3)*cos(2*%pi*k_min/%nobs)
+      set s_tilde  = olp - phi1 - %beta(1)*t - %beta(2)*sin(2.*%pi*k_min*t/%nobs) - %beta(3)*cos(2.*%pi*k_min*t/%nobs)
+      dif s_tilde / ds_tilde
+
+
+		   lin prod ; # s_tilde{1} constant dsin1 dcos1 ds_tilde{1}
+      exc(noprint) ; # dsin1 dcos1
+      com f_k = %cdstat , tau_lm = %tstats(1) , nobs = %nobs
+      lin(noprint) dy start end ; # y{1}  constant dy{1 to lags}
+
